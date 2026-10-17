@@ -55,9 +55,18 @@ release() { # release <version> <api-status>: change the pod template, which sta
   ]" >/dev/null
 }
 
-fetch() { # fetch <service> <path>: GET from inside the cluster
-  kubectl run "curl-$RANDOM" --rm -i --restart=Never --quiet --image=curlimages/curl:8.11.1 -- \
-    curl -fsS --max-time 3 "http://$1$2" 2>/dev/null | tr -d '\r\n'
+fetch() { # fetch <service> <path>: GET from inside the cluster, retried (the first pod pulls the image)
+  local out
+  for _ in 1 2 3 4 5; do
+    out="$(kubectl run "curl-$RANDOM" --rm -i --restart=Never --quiet --image=curlimages/curl:8.11.1 -- \
+      curl -fsS --max-time 3 "http://$1$2" 2>/dev/null | tr -d '\r\n' || true)"
+    if [ -n "$out" ]; then
+      printf '%s' "$out"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 always_serves() { # always_serves <version>: 8 requests to the stable service, all must be this version
