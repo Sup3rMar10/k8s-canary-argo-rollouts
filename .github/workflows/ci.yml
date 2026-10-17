@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARGO_ROLLOUTS_VERSION: v1.10.1
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: kubectl kustomize manifests > /dev/null
+      - run: shellcheck scripts/*.sh
+
+  canary:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: canary
+          wait: 120s
+
+      - name: Install Argo Rollouts (pinned)
+        run: |
+          kubectl create namespace argo-rollouts
+          kubectl apply -n argo-rollouts -f "https://github.com/argoproj/argo-rollouts/releases/download/${ARGO_ROLLOUTS_VERSION}/install.yaml"
+          kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=180s
+
+      - name: Canary releases - good, broken, recover
+        run: scripts/canary-test.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get rollout,analysisrun,rs,pods,svc -o wide || true
+          kubectl get rollout webapp -o yaml || true
+          kubectl get analysisrun -o yaml || true
+          kubectl -n argo-rollouts logs deployment/argo-rollouts --tail=200 || true
+          kubectl get events --sort-by=.lastTimestamp || true

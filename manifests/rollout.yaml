@@ -1,0 +1,118 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: webapp
+spec:
+  replicas: 4
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: webapp
+  strategy:
+    canary:
+      stableService: webapp-stable
+      canaryService: webapp-canary
+      maxSurge: 1
+      maxUnavailable: 0
+      # No ingress or service mesh here, so traffic splits by pod count (25% of 4 replicas = 1 canary pod).
+      steps:
+        - setWeight: 25
+        - analysis:
+            templates:
+              - templateName: api-check
+        - setWeight: 50
+        - pause:
+            duration: 10s
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+        - name: webapp
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          env:
+            # The pipeline patches these two values to create a release. Order matters (index 0, 1).
+            - name: APP_VERSION
+              value: v1
+            - name: API_STATUS
+              value: "200"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: template
+              mountPath: /etc/nginx/templates
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: template
+          configMap:
+            name: webapp-nginx-template
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-stable
+spec:
+  selector:
+    app: webapp
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-canary
+spec:
+  selector:
+    app: webapp
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# The analysis is a Kubernetes Job: it passes when the Job exits 0. It calls the CANARY service only,
+# so it judges the new version and not the old one. Three checks, 5 seconds apart, no failures allowed.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: api-check
+spec:
+  metrics:
+    - name: api-check
+      interval: 5s
+      count: 3
+      failureLimit: 0
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: check
+                    image: curlimages/curl:8.11.1
+                    command: ["sh", "-c"]
+                    args: ["curl -fsS --max-time 3 http://webapp-canary/api/check"]

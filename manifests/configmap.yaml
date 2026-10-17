@@ -1,0 +1,29 @@
+# nginx template: the official image substitutes ${APP_VERSION} and ${API_STATUS} from the pod's
+# environment at start-up, so one image can play a good release or a broken one.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-nginx-template
+data:
+  default.conf.template: |
+    server {
+        listen 8080;
+
+        # Readiness only proves the process is up. A broken release still passes it, which is
+        # exactly the case a readiness probe cannot catch and canary analysis can.
+        location = /healthz {
+            default_type text/plain;
+            return 200 "ok\n";
+        }
+
+        location = /version {
+            default_type text/plain;
+            return 200 "${APP_VERSION}\n";
+        }
+
+        # The business endpoint the analysis checks. ${API_STATUS} is 200 for a good release.
+        location = /api/check {
+            default_type text/plain;
+            return ${API_STATUS} "${APP_VERSION}\n";
+        }
+    }
